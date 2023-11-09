@@ -2,13 +2,13 @@ import re
 import string
 import json
 from nltk.stem import WordNetLemmatizer
-from spellchecker import SpellChecker
+from autocorrect import Speller
 
 class Preprocessor:
     def __init__(self):
         self.load_contractions()
         self.load_abbreviations()
-        self.spell = SpellChecker()
+        self.spell = Speller()
 
     def load_contractions(self):
         with open("contractions.json", "r") as json_file:
@@ -26,17 +26,6 @@ class Preprocessor:
     def remove_urls(self, text):
         return re.sub(r'https?://\S+|www\.\S+|ftp://\S+', '', text)
 
-    def separate_punctuations_from_words(self, text):
-        for p in string.punctuation:
-            text = text.replace(p, f' {p} ')
-        return text
-
-    def replace_continues_dots(self, text):
-        continues_dots = ['..', '...', '....', '.....', '......', '.......', '........', '.........', '..........']
-        for c in continues_dots:
-            text = text.replace(c, ' ... ')
-        return text
-
     def remove_html_tags(self, text):
         return re.compile(r'<.*?>').sub('', text)
 
@@ -51,9 +40,25 @@ class Preprocessor:
                                    ']+', flags=re.UNICODE)
         return emoji_pattern.sub('', text)
 
-    def correct_spelling(self, input_text):
+    def separate_punctuations_from_words(self, text):
+        continues_dots = ['.  .  .  .  .  .  .  .', '.  .  .  .  .  .  .', '. . . . . .', '. . . . . .', '. . . . .', '. . . .', '. . .', '. .']
+        for p in string.punctuation:
+            text = text.replace(p, f' {p} ')
+        for c in continues_dots:
+            text = text.replace(c, ' ... ')
+        return text
+
+    def autocorrect_text(self, input_text):
         words = input_text.split()
-        corrected_words = [self.spell.correction(word) if word in self.spell.unknown(words) else word for word in words]
+        corrected_words = []
+
+        for word in words:
+            corrected_word = self.spell(word)
+            if corrected_word != word:
+                corrected_words.append(corrected_word)
+            else:
+                corrected_words.append(word)
+
         corrected_text = " ".join(corrected_words)
         return corrected_text
 
@@ -68,14 +73,13 @@ class Preprocessor:
         return word_net_lemma.lemmatize(text)
 
     def to_lowercase(self, text):
-        return text.to_lowercase()
+        return text.lower()
 
     def process_text(self, input_text,
                      lowercase=False,
                      contractions=False,
                      urls=False,
                      punctuation=False,
-                     dots=False,
                      html_tags=False,
                      emoji=False,
                      spelling=False,
@@ -93,21 +97,18 @@ class Preprocessor:
             processed_text = self.remove_emoji(processed_text)
 
         # replace
-        if abbreviations: #lmao
+        if abbreviations:  # lmao
             processed_text = self.convert_abbrev_in_text(processed_text)
-        if contractions: #It's
+        if contractions:  # It's
             processed_text = self.replace_contractions(processed_text)
-        if dots: # ...
-            processed_text = self.replace_continues_dots(processed_text)
-        if punctuation: # good.so -> good . so
+        if punctuation:  # good.so -> good . so
             processed_text = self.separate_punctuations_from_words(processed_text)
         if lemma:
             processed_text = self.lemma(processed_text)
-
         if lowercase:
             processed_text = self.to_lowercase(processed_text)
-
         if spelling:
-            processed_text = self.correct_spelling(processed_text)
+            processed_text = self.autocorrect_text(processed_text)
 
         return processed_text
+
