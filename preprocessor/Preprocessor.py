@@ -1,8 +1,14 @@
+import os
 import re
 import string
 import json
+
+import nltk
+from nltk import pos_tag
+from nltk.corpus import wordnet
 from nltk.stem import WordNetLemmatizer
 from autocorrect import Speller
+
 
 class Preprocessor:
     def __init__(self):
@@ -11,12 +17,22 @@ class Preprocessor:
         self.spell = Speller()
 
     def load_contractions(self):
-        with open("contractions.json", "r") as json_file:
+        filepath = os.path.join(os.path.dirname(__file__), "resources/contractions.json")
+        with open(filepath, "r") as json_file:
             self.contractions = json.load(json_file)
 
     def load_abbreviations(self):
-        with open("abbreviations.json", "r") as json_file:
+        filepath = os.path.join(os.path.dirname(__file__), "resources/abbreviations.json")
+        with open(filepath, "r") as json_file:
             self.abbreviations = json.load(json_file)
+
+    # def load_contractions(self):
+    #     with open("resources/contractions.json", "r") as json_file:
+    #         self.contractions = json.load(json_file)
+    #
+    # def load_abbreviations(self):
+    #     with open("resources/abbreviations.json", "r") as json_file:
+    #         self.abbreviations = json.load(json_file)
 
     def replace_contractions(self, text):
         for key, value in self.contractions.items():
@@ -41,7 +57,8 @@ class Preprocessor:
         return emoji_pattern.sub('', text)
 
     def separate_punctuations_from_words(self, text):
-        continues_dots = ['.  .  .  .  .  .  .  .', '.  .  .  .  .  .  .', '. . . . . .', '. . . . . .', '. . . . .', '. . . .', '. . .', '. .']
+        continues_dots = ['.  .  .  .  .  .  .  .', '.  .  .  .  .  .  .', '. . . . . .', '. . . . . .', '. . . . .',
+                          '. . . .', '. . .', '. .']
         for p in string.punctuation:
             text = text.replace(p, f' {p} ')
         for c in continues_dots:
@@ -70,7 +87,27 @@ class Preprocessor:
 
     def lemma(self, text):
         word_net_lemma = WordNetLemmatizer()
-        return word_net_lemma.lemmatize(text)
+
+        tokens = nltk.word_tokenize(text)
+        pos_tags = pos_tag(tokens)
+
+        pos_tags = [(token, self.get_wordnet_pos(tag)) for token, tag in pos_tags]
+
+        lemmatized_tokens = [word_net_lemma.lemmatize(token, pos=tag) for token, tag in pos_tags]
+
+        return ' '.join(lemmatized_tokens)
+
+    def get_wordnet_pos(self, treebank_tag):
+        if treebank_tag.startswith('J'):
+            return wordnet.ADJ
+        elif treebank_tag.startswith('V'):
+            return wordnet.VERB
+        elif treebank_tag.startswith('N'):
+            return wordnet.NOUN
+        elif treebank_tag.startswith('R'):
+            return wordnet.ADV
+        else:
+            return wordnet.NOUN
 
     def to_lowercase(self, text):
         return text.lower()
@@ -111,4 +148,3 @@ class Preprocessor:
             processed_text = self.autocorrect_text(processed_text)
 
         return processed_text
-
