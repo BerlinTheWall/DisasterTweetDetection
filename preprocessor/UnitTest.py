@@ -1,7 +1,6 @@
 import unittest
 from Preprocessor import Preprocessor
 
-
 class TestPreprocessor(unittest.TestCase):
     def setUp(self):
         self.preprocessor = Preprocessor()
@@ -22,11 +21,11 @@ class TestPreprocessor(unittest.TestCase):
         expected_output = "I love Python! "
         self.assertEqual(expected_output, self.preprocessor.remove_emoji(input_text))
 
-    def test_separate_punctuations_from_words(self):
-        input_text = "Hello, how are you?"
-        expected_output = "Hello ,  how are you ? "
+    def test_remove_punctuations_from_words(self):
+        input_text = text_temp = "What a            book............!!!!!!  ????"
+        expected_output = "What a book ... ! ?"
         self.assertEqual(expected_output,
-                         self.preprocessor.separate_punctuations_from_words(input_text)
+                         self.preprocessor.remove_punctuations_from_words(input_text)
                          )
 
     def test_autocorrect_text(self):
@@ -54,14 +53,16 @@ class TestPreprocessor(unittest.TestCase):
 
     def test_process_text(self):
         input_text = "Hello, World! Visit https://www.example.com for more info."
-        expected_output = "hello ,  world !  visit  for more info . "
+        expected_output = "hello , world ! visit for more info ."
         self.assertEqual(
             expected_output,
             self.preprocessor.process_text(
-                input_text, urls=True, punctuation=True, lowercase=True
+                input_text, spelling=True, lemma=True
             )
         )
 
 
 if __name__ == "__main__":
     unittest.main()
+
+#%%
