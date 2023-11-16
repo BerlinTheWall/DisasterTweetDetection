@@ -1,3 +1,4 @@
+import math
 import os
 import re
 import string
@@ -251,6 +252,16 @@ class Preprocessor:
         Boolean flags to use the corresponding functions:
         lowercase - contractions - urls - punctuation - html_tags - emoji - spelling - abbreviations - lemma
         """
+
+        # Check if input_text is NaN
+        if isinstance(input_text, float) and math.isnan(input_text):
+            return 'None'
+            # raise ValueError("Input text is NaN.")
+
+        # Check if input_text is None
+        if input_text is None:
+            return 'None'
+            # raise ValueError("Input text cannot be None.")
 
         processed_text = input_text
 
