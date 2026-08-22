@@ -1,3 +1,5 @@
 [tool.pytest.ini_options]
+# Put the repo root on sys.path so `pytest` (the console script) can import
+# `data`; only `python -m pytest` does that on its own.
 pythonpath = ["."]
 testpaths = ["tests"]

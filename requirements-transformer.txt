@@ -1,7 +1,0 @@
-# Extra dependencies for train_transformer.py.  Install *after* requirements.txt.
-# Pick the torch build that matches your CUDA version: https://pytorch.org/get-started
--r requirements.txt
-torch>=2.1
-transformers>=4.40
-sentencepiece>=0.2         # needed by the DeBERTa-v3 tokenizer
-accelerate>=0.30

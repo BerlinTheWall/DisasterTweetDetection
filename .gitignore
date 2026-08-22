@@ -6,8 +6,5 @@ __pycache__/
 .venv/
 venv/
 
-# generated artifacts
-data/
-checkpoints/
+artifacts/
 submission.csv
-nltk_data/
