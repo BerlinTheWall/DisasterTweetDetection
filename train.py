@@ -104,7 +104,13 @@ def predict(model, loader, device) -> np.ndarray:
 def train_one_fold(args, model_path, train_tensors, valid_tensors, test_loader, device):
     """Train a fresh model on one fold; return (valid probs, test probs)."""
     model = AutoModelForSequenceClassification.from_pretrained(
-        model_path, num_labels=2).to(device)
+        model_path, num_labels=2)
+    # Many Hub checkpoints are stored in fp16, and transformers 5.x honours the
+    # stored dtype by default. Mixed-precision training needs fp32 master
+    # weights -- autocast casts per-op -- so half-precision parameters make
+    # GradScaler.unscale_ raise "Attempting to unscale FP16 gradients", and on
+    # CPU they silently produce NaNs instead.
+    model = model.float().to(device)
 
     loader = DataLoader(TensorDataset(*train_tensors), batch_size=args.batch_size,
                         shuffle=True, drop_last=False)
@@ -205,6 +211,10 @@ def main(args) -> None:
 
     test_probs /= trained
     scored = ~np.isnan(oof)
+    if not scored.any():
+        raise RuntimeError(
+            "every out-of-fold prediction is NaN -- training diverged. "
+            "Lower --lr, or check that the checkpoint loaded in fp32.")
     threshold, best = tune_threshold(y[scored], oof[scored])
     print(f"\nOOF F1 @ 0.50          = "
           f"{f1_score(y[scored], (oof[scored] >= 0.5).astype(int)):.4f}")
