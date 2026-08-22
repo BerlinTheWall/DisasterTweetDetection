@@ -1,11 +1,4 @@
-"""TF-IDF + linear baseline -- a fast CPU sanity check, not a competitive entry.
-
-    python train_baseline.py
-
-Runs in ~10 seconds with no GPU and no downloads. Use it to confirm the data
-loads and the submission format is right; expect ~0.80 on the public
-leaderboard. For a competitive score, use ``train.py``.
-"""
+"""TF-IDF + linear baseline: a fast CPU check, not a competitive entry."""
 
 from __future__ import annotations
 

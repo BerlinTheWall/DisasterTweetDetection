@@ -1,16 +1,9 @@
 """Fine-tune a pretrained transformer on the Disaster Tweets dataset.
 
     python train.py                                  # 5-fold DeBERTa-v3-base
-    python train.py --folds 1 --epochs 1 --limit 500 # 2-minute smoke test
+    python train.py --folds 1 --epochs 1 --limit 500 # smoke test
 
-Writes ``submission.csv`` plus ``artifacts/<tag>_oof.npy`` and
-``artifacts/<tag>_test.npy`` so separate runs can be ensembled afterwards.
-
-Deliberately a plain PyTorch loop rather than ``transformers.Trainer``: the
-Trainer API changed shape between transformers 4.x and 5.x (``tokenizer`` ->
-``processing_class``, ``evaluation_strategy`` -> ``eval_strategy``,
-``warmup_ratio`` removed), and none of that churn is worth inheriting for a
-loop this small.
+Writes submission.csv and per-run probabilities under artifacts/.
 """
 
 from __future__ import annotations
@@ -36,16 +29,7 @@ ARTIFACTS = ROOT / "artifacts"
 
 
 def resolve_model(model_id: str) -> str:
-    """Download the weights once, up front, with a visible progress bar.
-
-    ``from_pretrained`` fetches lazily and silently, so a first run looks
-    identical to a hang while ~400 MB comes down an unauthenticated (and
-    therefore rate-limited) connection. Doing it explicitly here means you can
-    see bytes moving, and every fold afterwards reads from the local cache.
-
-    Set a ``HF_TOKEN`` environment variable for much higher rate limits:
-    https://huggingface.co/settings/tokens
-    """
+    """Fetch weights up front with a progress bar; from_pretrained does it silently."""
     if Path(model_id).exists():
         return model_id
     try:
@@ -55,15 +39,12 @@ def resolve_model(model_id: str) -> str:
 
     print(f"fetching {model_id} from the Hugging Face Hub (first run only)")
     if not os.environ.get("HF_TOKEN"):
-        print("  no HF_TOKEN set - downloads are rate-limited and slow but will "
-              "still finish; see https://huggingface.co/settings/tokens")
+        print("  no HF_TOKEN set - downloads are rate-limited; see "
+              "https://huggingface.co/settings/tokens")
     try:
         path = snapshot_download(
-            model_id,
-            # Skip TensorFlow/Flax copies of the same weights.
-            ignore_patterns=["*.h5", "*.msgpack", "*.ot", "*tf_model*", "*.onnx"],
-        )
-    except Exception as error:  # offline, rate limited, bad id
+            model_id, ignore_patterns=["*.h5", "*.msgpack", "*.ot", "*tf_model*", "*.onnx"])
+    except Exception as error:
         print(f"  could not prefetch ({type(error).__name__}: {error});"
               " falling back to lazy download")
         return model_id
@@ -71,14 +52,7 @@ def resolve_model(model_id: str) -> str:
     return path
 
 
-def tokenize(tokenizer, texts: list[str], max_length: int) -> tuple[torch.Tensor, torch.Tensor]:
-    encoded = tokenizer(texts, truncation=True, padding="max_length",
-                        max_length=max_length, return_tensors="pt")
-    return encoded["input_ids"], encoded["attention_mask"]
-
-
 def report_progress(epoch, epochs, step, steps, loss, started) -> None:
-    """Overwrite one line with live progress -- a silent loop looks like a hang."""
     elapsed = time.time() - started
     rate = step / elapsed if elapsed else 0.0
     eta = (steps - step) / rate if rate else 0.0
@@ -87,8 +61,13 @@ def report_progress(epoch, epochs, step, steps, loss, started) -> None:
           end="", flush=True)
 
 
+def tokenize(tokenizer, texts: list[str], max_length: int):
+    encoded = tokenizer(texts, truncation=True, padding="max_length",
+                        max_length=max_length, return_tensors="pt")
+    return encoded["input_ids"], encoded["attention_mask"]
+
+
 def predict(model, loader, device) -> np.ndarray:
-    """Return P(disaster) for every row in ``loader``."""
     model.eval()
     probabilities = []
     with torch.no_grad():
@@ -102,22 +81,16 @@ def predict(model, loader, device) -> np.ndarray:
 
 
 def train_one_fold(args, model_path, train_tensors, valid_tensors, test_loader, device):
-    """Train a fresh model on one fold; return (valid probs, test probs)."""
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_path, num_labels=2)
-    # Many Hub checkpoints are stored in fp16, and transformers 5.x honours the
-    # stored dtype by default. Mixed-precision training needs fp32 master
-    # weights -- autocast casts per-op -- so half-precision parameters make
-    # GradScaler.unscale_ raise "Attempting to unscale FP16 gradients", and on
-    # CPU they silently produce NaNs instead.
+    model = AutoModelForSequenceClassification.from_pretrained(model_path, num_labels=2)
+    # Hub checkpoints are often fp16 and transformers 5.x keeps that dtype. AMP
+    # needs fp32 master weights: half params make unscale_ raise on CUDA and
+    # produce NaNs on CPU.
     model = model.float().to(device)
 
-    loader = DataLoader(TensorDataset(*train_tensors), batch_size=args.batch_size,
-                        shuffle=True, drop_last=False)
+    loader = DataLoader(TensorDataset(*train_tensors), batch_size=args.batch_size, shuffle=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     total_steps = len(loader) * args.epochs
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer, int(0.1 * total_steps), total_steps)
+    scheduler = get_cosine_schedule_with_warmup(optimizer, int(0.1 * total_steps), total_steps)
     scaler = torch.amp.GradScaler(device.type, enabled=device.type == "cuda")
 
     steps_per_epoch = len(loader)
@@ -139,8 +112,7 @@ def train_one_fold(args, model_path, train_tensors, valid_tensors, test_loader, 
             scheduler.step()
             running += loss.item()
             if step % 10 == 0 or step == steps_per_epoch:
-                report_progress(epoch, args.epochs, step, steps_per_epoch,
-                                running / step, started)
+                report_progress(epoch, args.epochs, step, steps_per_epoch, running / step, started)
         print(f"\r    epoch {epoch + 1}/{args.epochs}  loss {running / steps_per_epoch:.4f}"
               f"  ({time.time() - started:.0f}s)" + " " * 30)
 
@@ -155,7 +127,6 @@ def train_one_fold(args, model_path, train_tensors, valid_tensors, test_loader, 
 
 
 def tune_threshold(y_true: np.ndarray, probabilities: np.ndarray) -> tuple[float, float]:
-    """F1 peaks off 0.5 on this dataset; pick the cut on out-of-fold predictions."""
     grid = np.arange(0.20, 0.81, 0.01)
     scores = [f1_score(y_true, (probabilities >= t).astype(int)) for t in grid]
     best = int(np.argmax(scores))
@@ -169,12 +140,8 @@ def main(args) -> None:
     print(f"device: {device}"
           + (f" ({torch.cuda.get_device_name(0)})" if device.type == "cuda" else ""))
     if device.type == "cpu":
-        print("  WARNING: no CUDA GPU visible, so this will run on the CPU.\n"
-              "  A full 5-fold run takes several hours there. Check your install with:\n"
-              "    python -c \"import torch; print(torch.version.cuda, torch.cuda.is_available())\"\n"
-              "  If that prints None/False, reinstall torch from the CUDA index:\n"
-              "    pip install --force-reinstall torch "
-              "--index-url https://download.pytorch.org/whl/cu124")
+        print("  WARNING: no CUDA GPU visible; a full 5-fold run takes hours on CPU.\n"
+              "  Check with: python -c \"import torch; print(torch.cuda.is_available())\"")
 
     train_df, test_df = data.load("train"), data.load("test")
     if args.limit:
@@ -190,8 +157,7 @@ def main(args) -> None:
 
     oof = np.full(len(train_df), np.nan)
     test_probs = np.zeros(len(test_df))
-    splitter = StratifiedKFold(n_splits=max(args.folds, 2), shuffle=True,
-                               random_state=args.seed)
+    splitter = StratifiedKFold(n_splits=max(args.folds, 2), shuffle=True, random_state=args.seed)
 
     trained = 0
     for fold, (tr, va) in enumerate(splitter.split(train_ids, y), start=1):
@@ -212,9 +178,7 @@ def main(args) -> None:
     test_probs /= trained
     scored = ~np.isnan(oof)
     if not scored.any():
-        raise RuntimeError(
-            "every out-of-fold prediction is NaN -- training diverged. "
-            "Lower --lr, or check that the checkpoint loaded in fp32.")
+        raise RuntimeError("every out-of-fold prediction is NaN - training diverged")
     threshold, best = tune_threshold(y[scored], oof[scored])
     print(f"\nOOF F1 @ 0.50          = "
           f"{f1_score(y[scored], (oof[scored] >= 0.5).astype(int)):.4f}")
@@ -230,19 +194,15 @@ def main(args) -> None:
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default="microsoft/deberta-v3-base",
-                        help="HF model id, or a local directory")
+    parser.add_argument("--model", default="microsoft/deberta-v3-base")
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--max-length", type=int, default=84)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--limit", type=int, default=0,
-                        help="train on only the first N rows (smoke tests)")
-    parser.add_argument("--tag", default="",
-                        help="name for this run's saved probabilities "
-                             "(defaults to the model name)")
+    parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--tag", default="")
     return parser.parse_args()
 
 

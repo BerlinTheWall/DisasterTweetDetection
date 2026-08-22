@@ -1,5 +1,3 @@
-"""Tests for the data loading and cleaning helpers."""
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -13,12 +11,11 @@ def test_clean_strips_urls_and_html_escapes():
 
 
 def test_clean_preserves_case_and_punctuation():
-    # The transformer tokenizer expects natural text -- do not normalise it away.
     assert data.clean("BREAKING: Forest fire near La Ronge, Sask.") == \
         "BREAKING: Forest fire near La Ronge, Sask."
 
 
-def test_normalize_is_only_for_matching():
+def test_normalize():
     assert data.normalize("Fire!! http://t.co/x  FIRE") == "fire fire"
 
 
@@ -27,8 +24,7 @@ def test_fix_conflicting_labels_snaps_to_majority():
         "text": ["same tweet", "same tweet!", "same tweet", "other"],
         "target": [1, 1, 0, 0],
     })
-    fixed = data.fix_conflicting_labels(df)
-    assert fixed["target"].tolist() == [1, 1, 1, 0]
+    assert data.fix_conflicting_labels(df)["target"].tolist() == [1, 1, 1, 0]
 
 
 def test_fix_conflicting_labels_leaves_ties_alone():
@@ -57,14 +53,13 @@ def test_load_train_only_flips_conflicting_labels():
     raw = pd.read_csv(data.DATASET / "train.csv")
     fixed = data.load("train")
     changed = (raw["target"].to_numpy() != fixed["target"].to_numpy()).sum()
-    assert 0 < changed < 200, f"unexpected number of label corrections: {changed}"
+    assert 0 < changed < 200
 
 
 def test_write_submission_matches_sample(tmp_path):
     sample = pd.read_csv(data.DATASET / "sample_submission.csv")
     test = data.load("test")
-    path = data.write_submission(test["id"], np.zeros(len(test)), tmp_path / "s.csv")
-    written = pd.read_csv(path)
+    written = pd.read_csv(data.write_submission(test["id"], np.zeros(len(test)), tmp_path / "s.csv"))
     assert list(written.columns) == list(sample.columns)
     assert written["id"].tolist() == sample["id"].tolist()
     assert written["target"].isin([0, 1]).all()
