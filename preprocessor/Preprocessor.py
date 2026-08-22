@@ -1,292 +1,291 @@
-import math
+"""
+Text preprocessing for English tweets.
+
+The public API is intentionally unchanged from the original version of this
+file: ``Preprocessor().process_text(text, **flags)``.  What changed is that it
+actually installs and runs on current Python / library versions:
+
+* ``autocorrect`` (unmaintained, no longer builds on modern setuptools) was
+  replaced by ``pyspellchecker``.
+* NLTK resources are downloaded lazily and use the post-NLTK-3.8.2 names
+  (``punkt_tab``, ``averaged_perceptron_tagger_eng``) with a fallback to the
+  legacy names.
+* Contraction expansion is a single compiled pass with word boundaries instead
+  of 113 unanchored ``re.sub`` calls per string.
+"""
+
+from __future__ import annotations
+
+import json
 import os
 import re
-import string
-import json
+from functools import lru_cache
+from typing import Iterable
 
 import nltk
 from nltk import pos_tag
 from nltk.corpus import wordnet
 from nltk.stem import WordNetLemmatizer
-from autocorrect import Speller
+
+_RESOURCES = os.path.join(os.path.dirname(__file__), "resources")
+
+# (nltk.find path, modern package name, legacy package name)
+_NLTK_REQUIREMENTS = (
+    ("tokenizers/punkt_tab", "punkt_tab", "punkt"),
+    ("taggers/averaged_perceptron_tagger_eng",
+     "averaged_perceptron_tagger_eng", "averaged_perceptron_tagger"),
+    ("corpora/wordnet", "wordnet", "wordnet"),
+    ("corpora/omw-1.4", "omw-1.4", "omw-1.4"),
+)
+
+_URL_RE = re.compile(r"https?://\S+|www\.\S+|ftp://\S+")
+_HTML_RE = re.compile(r"<[^>]+>")
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001f300-\U0001faff"   # symbols, pictographs, emoticons, transport
+    "\U00002600-\U000027bf"   # misc symbols & dingbats
+    "\U0001f1e0-\U0001f1ff"   # regional indicators (flags)
+    "\U00002b00-\U00002bff"
+    "\U0000fe00-\U0000fe0f"   # variation selectors
+    "\U0001f000-\U0001f02f"
+    "‍⃣⭐❤"
+    "]+",
+    flags=re.UNICODE,
+)
+_KEEP_RE = re.compile(r"[^a-zA-Z0-9,!?.\-'\" ]")
+_DOTS_RE = re.compile(r"\.{2,}")
+_SPELL_TOKEN_RE = re.compile(r"^(\W*)([A-Za-z][A-Za-z'-]*)(\W*)$")
+
+
+@lru_cache(maxsize=1)
+def ensure_nltk_data(quiet: bool = True) -> None:
+    """Download the NLTK corpora this module needs, once per process.
+
+    Safe to call repeatedly and offline: if a resource is already present or
+    cannot be fetched, this returns instead of raising.
+    """
+    for path, modern, legacy in _NLTK_REQUIREMENTS:
+        try:
+            nltk.data.find(path)
+            continue
+        except LookupError:
+            pass
+        for name in (modern, legacy):
+            try:
+                if nltk.download(name, quiet=quiet):
+                    break
+            except Exception:  # offline, proxy, permissions...
+                continue
 
 
 class Preprocessor:
+    """Cleans English tweet text for downstream NLP models.
+
+    Every step is opt-in through :meth:`process_text` flags, so the same
+    instance can produce light cleaning for a transformer and aggressive
+    cleaning for a bag-of-words model.
     """
-    Preprocessor class for English texts designed for use in NLP models,
-    incorporating common tactics to clean the output texts.
-    """
-    def __init__(self):
+
+    def __init__(self, download_nltk: bool = True, spell_distance: int = 1) -> None:
+        self.contractions = self._load_json("contractions.json")
+        self.abbreviations = {k.lower(): v for k, v in
+                              self._load_json("abbreviations.json").items()}
+        self._contraction_re = self._compile_contractions(self.contractions)
+        self._spell_distance = spell_distance
+        self._spell = None  # built lazily; loading the frequency list is slow
+        self._spell_cache: dict[str, str] = {}
+        if download_nltk:
+            ensure_nltk_data()
+
+    # ------------------------------------------------------------------ setup
+
+    @staticmethod
+    def _load_json(name: str) -> dict:
+        with open(os.path.join(_RESOURCES, name), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    @staticmethod
+    def _compile_contractions(contractions: dict) -> re.Pattern:
+        """Build one alternation regex, longest key first so "i'd've" beats "i'd"."""
+        keys = sorted({k.lower() for k in contractions}, key=len, reverse=True)
+        alternation = "|".join(re.escape(k) for k in keys)
+        # \b misbehaves around apostrophes, so bound on word chars manually.
+        return re.compile(rf"(?<![\w'])({alternation})(?![\w'])", flags=re.IGNORECASE)
+
+    @property
+    def spell(self):
+        """Lazily constructed :class:`spellchecker.SpellChecker`.
+
+        ``spell_distance=1`` (the default) is roughly 40x faster than 2 and is
+        the only setting that makes whole-dataset correction practical; pass
+        ``spell_distance=2`` for a small accuracy gain at a large time cost.
         """
-        Initializes an instance of the Preprocessor class.
-        load contractions and abbreviations from JSON file.
-        """
-        self.load_contractions()
-        self.load_abbreviations()
-        self.spell = Speller()
+        if self._spell is None:
+            from spellchecker import SpellChecker
+            self._spell = SpellChecker(distance=self._spell_distance)
+        return self._spell
 
-    def load_contractions(self):
-        """
-        Loads a JSON file containing common English contractions and stores them in the contractions attribute.
-        """
-        filepath = os.path.join(os.path.dirname(__file__), "resources/contractions.json")
-        with open(filepath, "r") as json_file:
-            self.contractions = json.load(json_file)
+    # ------------------------------------------------------------- operations
 
-    def load_abbreviations(self):
-        """
-        Loads a JSON file containing common abbreviations and stores them in the abbreviations attribute.
-        """
-        filepath = os.path.join(os.path.dirname(__file__), "resources/abbreviations.json")
-        with open(filepath, "r") as json_file:
-            self.abbreviations = json.load(json_file)
+    def remove_urls(self, text: str) -> str:
+        """Strip http(s)/www/ftp URLs."""
+        return _URL_RE.sub("", text)
 
-    # def load_contractions(self):
-    #     with open("resources/contractions.json", "r") as json_file:
-    #         self.contractions = json.load(json_file)
-    #
-    # def load_abbreviations(self):
-    #     with open("resources/abbreviations.json", "r") as json_file:
-    #         self.abbreviations = json.load(json_file)
+    def remove_html_tags(self, text: str) -> str:
+        """Strip HTML/XML tags, keeping their inner text."""
+        return _HTML_RE.sub("", text)
 
-    def replace_contractions(self, text):
-        """
-        Replaces contractions in the input text with their expanded forms using a predefined list of contractions.
+    def remove_emoji(self, text: str) -> str:
+        """Strip emoji and pictographs."""
+        return _EMOJI_RE.sub("", text)
 
-        Arguments:
-        text -- The input text with contractions.
-
-        Returns:
-        str -- The input text with contractions replaced.
-        """
-        for key, value in self.contractions.items():
-            text = re.sub(re.escape(key), value, text)
-        return text
-
-    def remove_urls(self, text):
-        """
-        Removes URLs from the input text.
-
-        Arguments:
-        text -- The input text containing URLs.
-
-        Returns:
-        str -- The input text with URLs removed.
-        """
-        return re.sub(r'https?://\S+|www\.\S+|ftp://\S+', '', text)
-
-    def remove_html_tags(self, text):
-        """
-        Removes HTML tags from the input text.
-
-        Arguments:
-        text -- The input text containing HTML tags.
-
-        Returns:
-        str -- The input text with HTML tags removed.
-        """
-        return re.compile(r'<.*?>').sub('', text)
-
-    def remove_emoji(self, text):
-        """
-        Removes emojis from the input text.
-
-        Arguments:
-        text -- The input text containing emojis.
-
-        Returns:
-        str -- The input text with emojis removed.
-        """
-        emoji_pattern = re.compile('['
-                                   u'\U0001F600-\U0001F64F'
-                                   u'\U0001F300-\U0001F5FF'
-                                   u'\U0001F680-\U0001F6FF'
-                                   u'\U0001F1E0-\U0001F1FF'
-                                   u'\U00002702-\U000027B0'
-                                   u'\U000024C2-\U0001F251'
-                                   ']+', flags=re.UNICODE)
-        return emoji_pattern.sub('', text)
-
-    def remove_punctuations_from_words(self, text):
-        """
-        Remove punctuation and non-alphabetic characters from words in the input text.
-        Replace continuous characters to only one, and replace continuous dots with '...'
-
-        Arguments:
-        text -- The input text with punctuation characters and words.
-
-        Returns:
-        str -- The input text with punctuation characters removed from words.
-        """
-        exception_punctuation_list = [' ', '.', '?', '!', ',', '-', '\'', '\"', ]
-
-        text = re.sub(r'[^a-zA-Z0-9,!?.\-\'\" ]', '', text)
-
-        # replace continuous characters like . ! ?
-        text = re.sub(r'\.{2,}', ' ... ', text)
-        for c in exception_punctuation_list:
-            if c != '.':
-                text = re.sub(rf'{re.escape(c)}{{2,}}', c, text)
-        return text
-
-    def autocorrect_text(self, text):
-        """
-        Applies spelling correction to the input text using the autocorrect library.
-        Command to install the library using pip:
-        !pip install autocorrect
-
-        Arguments:
-        text -- The input text with potential spelling errors.
-
-        Returns:
-        str -- The input text with spelling errors corrected.
-        """
-
-        words = text.split()
-        corrected_words = []
-
-        for word in words:
-            corrected_word = self.spell(word)
-            if corrected_word != word:
-                corrected_words.append(corrected_word)
-            else:
-                corrected_words.append(word)
-
-        corrected_text = " ".join(corrected_words)
-        return corrected_text
-
-    def convert_abbrev_in_text(self, text):
-        """
-        Converts common abbreviations in the input text to their full forms using a predefined list of abbreviations.
-
-        Arguments:
-        text -- The input text with abbreviations.
-
-        Returns:
-        str -- The input text with abbreviations converted to full forms.
-        """
-        words = text.split()
-        converted_words = [self.abbreviations.get(word.lower(), word) for word in words]
-        converted_text = ' '.join(converted_words)
-        return converted_text
-
-    def lemma(self, text):
-        """
-        Lemmatizes the words in the input text using NLTK's WordNet lemmatizer.
-        You might need to download from NLTK using these commands:
-
-        nltk.download('punkt')
-        nltk.download('averaged_perceptron_tagger')
-        nltk.download('wordnet')
-
-        Arguments:
-        text -- The input text with words to be lemmatized.
-
-        Returns:
-        str -- The lemmatized version of the input text.
-        """
-
-        word_net_lemma = WordNetLemmatizer()
-
-        tokens = nltk.word_tokenize(text)
-        pos_tags = pos_tag(tokens)
-
-        pos_tags = [(token, self.get_wordnet_pos(tag)) for token, tag in pos_tags]
-
-        lemmatized_tokens = [word_net_lemma.lemmatize(token, pos=tag) for token, tag in pos_tags]
-
-        return ' '.join(lemmatized_tokens)
-
-    def get_wordnet_pos(self, treebank_tag):
-        """
-        Maps a Penn Treebank POS tag to a corresponding WordNet POS tag.
-
-        Arguments:
-        treebank_tag -- The POS tag from the Penn Treebank.
-
-        Returns:
-        str -- The corresponding WordNet POS tag.
-        """
-        if treebank_tag.startswith('J'):
-            return wordnet.ADJ
-        elif treebank_tag.startswith('V'):
-            return wordnet.VERB
-        elif treebank_tag.startswith('N'):
-            return wordnet.NOUN
-        elif treebank_tag.startswith('R'):
-            return wordnet.ADV
-        else:
-            return wordnet.NOUN
-
-    def to_lowercase(self, text):
-        """
-        Converts all characters in the input text to lowercase.
-
-        Arguments:
-        text -- The input text.
-
-        Returns:
-        str -- The input text with all characters converted to lowercase.
-        """
+    def to_lowercase(self, text: str) -> str:
+        """Lowercase the whole string."""
         return text.lower()
 
-    def process_text(self, input_text,
-                     urls=True,
-                     punctuation=True,
-                     abbreviations=True,
-                     html_tags=True,
-                     emoji=True,
-                     lowercase=True,
-                     contractions=True,
+    def replace_contractions(self, text: str) -> str:
+        """Expand contractions ("he's" -> "he is") in a single pass.
 
-                     spelling=False,
-                     lemma=False
-                     ):
-
+        Straight and curly apostrophes are both accepted, and the replacement
+        keeps the original casing of the first letter.
         """
-        Processes the input text based on specified preprocessing options.
+        text = text.replace("’", "'")
 
-        Arguments:
-        input_text -- The input text to be processed.
+        def _sub(match: re.Match) -> str:
+            found = match.group(0)
+            expansion = (self.contractions.get(found)
+                         or self.contractions.get(found.lower())
+                         or self.contractions.get(found.capitalize()))
+            if expansion is None:
+                return found
+            if found[:1].isupper():
+                return expansion[:1].upper() + expansion[1:]
+            return expansion
 
-        Boolean flags to use the corresponding functions:
-        lowercase - contractions - urls - punctuation - html_tags - emoji - spelling - abbreviations - lemma
+        return self._contraction_re.sub(_sub, text)
+
+    def convert_abbrev_in_text(self, text: str) -> str:
+        """Expand chat abbreviations ("btw" -> "by the way"), token by token."""
+        return " ".join(self.abbreviations.get(w.lower(), w) for w in text.split())
+
+    def remove_punctuations_from_words(self, text: str) -> str:
+        """Drop characters outside a small keep-list and collapse repeats.
+
+        ``"book............!!!!!!  ????"`` becomes ``"book ... ! ?"``.
         """
+        text = _KEEP_RE.sub("", text)
+        text = _DOTS_RE.sub(" ... ", text)
+        for char in (" ", "?", "!", ",", "-", "'", '"'):
+            text = re.sub(rf"{re.escape(char)}{{2,}}", char, text)
+        return text.strip()
 
-        # Check if input_text is NaN
-        if isinstance(input_text, float) and math.isnan(input_text):
-            return 'None'
-            # raise ValueError("Input text is NaN.")
+    def _correct_word(self, word: str) -> str:
+        """Correct one lowercase word, memoized -- tweets repeat vocabulary."""
+        cached = self._spell_cache.get(word)
+        if cached is None:
+            cached = self.spell.correction(word) or word
+            self._spell_cache[word] = cached
+        return cached
 
-        # Check if input_text is None
-        if input_text is None:
-            return 'None'
-            # raise ValueError("Input text cannot be None.")
+    def autocorrect_text(self, text: str) -> str:
+        """Spell-correct alphabetic tokens, preserving case and punctuation.
 
-        processed_text = input_text
+        Tokens shorter than four characters, tokens containing digits, and
+        @mentions / #hashtags are left alone -- "correcting" them does more
+        harm than good on tweets.  Results are memoized per word, which is what
+        makes running this over the full dataset practical.
+        """
+        corrected = []
+        for token in text.split():
+            match = _SPELL_TOKEN_RE.match(token)
+            if not match or token.startswith(("@", "#")):
+                corrected.append(token)
+                continue
+            lead, word, trail = match.groups()
+            lowered = word.lower()
+            if len(word) < 4 or self.spell.known([lowered]):
+                corrected.append(token)
+                continue
+            fixed = self._correct_word(lowered)
+            if word.isupper():
+                fixed = fixed.upper()
+            elif word[:1].isupper():
+                fixed = fixed.capitalize()
+            corrected.append(f"{lead}{fixed}{trail}")
+        return " ".join(corrected)
 
-        # remove
+    def lemma(self, text: str) -> str:
+        """POS-aware lemmatization; also separates punctuation into tokens."""
+        ensure_nltk_data()
+        lemmatizer = _get_lemmatizer()
+        tokens = nltk.word_tokenize(text)
+        return " ".join(
+            lemmatizer.lemmatize(token, pos=self.get_wordnet_pos(tag))
+            for token, tag in pos_tag(tokens)
+        )
+
+    @staticmethod
+    def get_wordnet_pos(treebank_tag: str) -> str:
+        """Map a Penn Treebank tag onto a WordNet POS constant."""
+        if treebank_tag.startswith("J"):
+            return wordnet.ADJ
+        if treebank_tag.startswith("V"):
+            return wordnet.VERB
+        if treebank_tag.startswith("R"):
+            return wordnet.ADV
+        return wordnet.NOUN
+
+    # ---------------------------------------------------------------- pipeline
+
+    def process_text(
+        self,
+        input_text,
+        urls: bool = True,
+        punctuation: bool = True,
+        abbreviations: bool = True,
+        html_tags: bool = True,
+        emoji: bool = True,
+        lowercase: bool = True,
+        contractions: bool = True,
+        spelling: bool = False,
+        lemma: bool = False,
+        na_value: str = "",
+    ) -> str:
+        """Run the enabled cleaning steps over ``input_text``.
+
+        ``None`` and NaN inputs return ``na_value`` (empty string by default)
+        rather than raising, because ``location`` is missing for roughly a
+        third of the rows in this dataset.
+        """
+        if input_text is None or (isinstance(input_text, float) and input_text != input_text):
+            return na_value
+        text = str(input_text)
+
         if urls:
-            processed_text = self.remove_urls(processed_text)
+            text = self.remove_urls(text)
         if html_tags:
-            processed_text = self.remove_html_tags(processed_text)
+            text = self.remove_html_tags(text)
         if emoji:
-            processed_text = self.remove_emoji(processed_text)
-
-        # replace
+            text = self.remove_emoji(text)
         if lowercase:
-            processed_text = self.to_lowercase(processed_text)
-        if abbreviations:  # lmao
-            processed_text = self.convert_abbrev_in_text(processed_text)
-        if contractions:  # It's
-            processed_text = self.replace_contractions(processed_text)
-        if punctuation:  # good.so -> good . so
-            processed_text = self.remove_punctuations_from_words(processed_text)
+            text = self.to_lowercase(text)
+        if abbreviations:
+            text = self.convert_abbrev_in_text(text)
+        if contractions:
+            text = self.replace_contractions(text)
+        if punctuation:
+            text = self.remove_punctuations_from_words(text)
         if lemma:
-            processed_text = self.lemma(processed_text)
+            text = self.lemma(text)
         if spelling:
-            processed_text = self.autocorrect_text(processed_text)
+            text = self.autocorrect_text(text)
+        return text
 
-        return processed_text
+    def process_series(self, values: Iterable, **options) -> list:
+        """Convenience wrapper: apply :meth:`process_text` over an iterable."""
+        return [self.process_text(v, **options) for v in values]
 
-# %%
+
+@lru_cache(maxsize=1)
+def _get_lemmatizer() -> WordNetLemmatizer:
+    return WordNetLemmatizer()

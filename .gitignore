@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.idea/
+.vscode/
+.venv/
+venv/
+
+# generated artifacts
+data/
+checkpoints/
+submission.csv
+nltk_data/
