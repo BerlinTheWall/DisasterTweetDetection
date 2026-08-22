@@ -21,6 +21,20 @@ python train.py --folds 1 --epochs 1 --limit 500   # ~2 min smoke test first
 python train.py                                    # 5-fold DeBERTa-v3-base
 ```
 
+The first run downloads ~400 MB of weights. `train.py` fetches them up front
+with a progress bar rather than letting `from_pretrained` do it lazily and
+silently, which is indistinguishable from a hang. Anonymous downloads are
+rate-limited; set a free token to make them fast:
+
+```bash
+setx HF_TOKEN hf_xxxxxxxx        # Windows, new shell required
+export HF_TOKEN=hf_xxxxxxxx      # macOS / Linux
+```
+
+Tokens: https://huggingface.co/settings/tokens (read access is enough). On
+Windows, enabling Developer Mode lets the cache use symlinks instead of
+duplicating files.
+
 Then upload `submission.csv` on the competition page, or:
 
 ```bash
