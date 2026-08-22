@@ -1,88 +1,89 @@
 # Disaster Tweet Detection
 
-[Natural Language Processing with Disaster Tweets](https://www.kaggle.com/competitions/nlp-getting-started)
-— classify tweets as describing a real disaster or not. Scored by F1 on the
-positive class.
+Classifying whether a tweet describes a real disaster or uses disaster language
+figuratively — "this traffic is a nightmare" versus an actual emergency. The
+distinction matters for emergency-response systems that monitor social media,
+and it is hard precisely because the surface language is often identical.
 
-## Setup
+Built for the Kaggle competition
+[Natural Language Processing with Disaster Tweets](https://www.kaggle.com/competitions/nlp-getting-started).
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install torch --index-url https://download.pytorch.org/whl/cu124   # match your CUDA
-pip install -r requirements.txt
-pytest
-```
+## Result
 
-Set `HF_TOKEN` for faster model downloads (`setx HF_TOKEN hf_xxxx`, then open a
-new shell). Tokens: https://huggingface.co/settings/tokens
+**0.84125 F1 — rank 54 on the leaderboard** *(22 August 2026)*.
 
-## Train
+Improved from a previous best of 0.82776.
 
-```bash
-python train.py --folds 1 --epochs 1 --limit 500   # smoke test
-python train.py                                    # 5-fold DeBERTa-v3-base
-```
-
-The first run downloads ~400 MB of weights. `train.py` fetches them up front
-with a progress bar rather than letting `from_pretrained` do it lazily and
-silently, which is indistinguishable from a hang. Anonymous downloads are
-rate-limited; set a free token to make them fast:
-
-```bash
-setx HF_TOKEN hf_xxxxxxxx        # Windows, new shell required
-export HF_TOKEN=hf_xxxxxxxx      # macOS / Linux
-```
-
-Tokens: https://huggingface.co/settings/tokens (read access is enough). On
-Windows, enabling Developer Mode lets the cache use symlinks instead of
-duplicating files.
-
-Then upload `submission.csv` on the competition page, or:
-
-```bash
-kaggle competitions submit -c nlp-getting-started -f submission.csv -m "deberta-v3-base 5-fold"
-```
-
-`train_baseline.py` is a 10-second CPU TF-IDF run for checking the data loads
-and the submission is shaped right. It scores around 0.80.
-
-## Layout
-
-| Path | What it is |
-| --- | --- |
-| `dataset/` | Raw Kaggle CSVs. |
-| `data.py` | Loading, cleaning, label repair, submission writing. |
-| `train.py` | Transformer fine-tuning, K-fold, tuned threshold. |
-| `train_baseline.py` | TF-IDF baseline, CPU-only. |
-| `tests/` | pytest suite for `data.py`. |
+Worth noting for anyone reading the number: this competition's public leaderboard
+contains perfect scores obtained from leaked test labels. Around 0.84 is close to
+the practical ceiling for an honestly-trained model on this task.
 
 ## Approach
 
-Cleaning is deliberately light — HTML unescape, URL strip, whitespace. No
-lowercasing, lemmatizing or spell correction: pretrained tokenizers expect
-natural text, and spell correction mangles the proper nouns that matter
-("La Ronge" → "la range"). Removing an earlier heavy pipeline raised the
-TF-IDF baseline from 0.7690 to 0.7783 OOF.
+1. **Preprocessing** (`preprocessor/`) — **[FILL: what cleaning you do. URL and
+   mention stripping? Hashtag handling? Emoji? Lowercasing? Say which, and why —
+   the choices are where the thinking shows.]**
+2. **Baseline and iteration** (`main.ipynb`) — **[FILL: what you started with
+   and what you tried]**
+3. **Transformer fine-tuning** — DistilBERT via KerasNLP, with a RoBERTa variant
+   in `Model_RoBERTa_1.ipynb`
 
-267 training rows are near-duplicate tweets annotated inconsistently;
-`fix_conflicting_labels` snaps each group to its majority (58 rows change).
+## Model comparison
 
-`keyword` is present for 99% of rows with a disaster rate spanning nearly
-0–100%, so it is prepended: `"wildfire: 13,000 residents evacuated"`.
+**[FILL: a small table. Which models you tried and what each scored. You have at
+least DistilBERT and RoBERTa — putting their numbers side by side turns this
+from "I trained a model" into "I ran an experiment", which is a different
+signal entirely.]**
 
-F1 does not peak at 0.5, so the threshold is picked on out-of-fold predictions
-and applied to the averaged test probabilities.
+| Model | Validation score | Leaderboard score |
+|---|---|---|
+| DistilBERT (KerasNLP) | **[FILL]** | **[FILL]** |
+| RoBERTa | **[FILL]** | **[FILL]** |
+| *Best submission* | | **0.84125** |
 
-DeBERTa-v3-base at 5 folds scores 0.83–0.84. Batch 16 at length 84 needs about
-4 GB of VRAM. If the DeBERTa tokenizer fails to build, `--model roberta-base`
-(~0.82) or `--model roberta-large --batch-size 8 --lr 1e-5` (~0.84) work.
+**[FILL: fill in the per-model numbers. Two models with their scores side by side
+turns this from "I trained a model" into "I ran an experiment" — a different
+signal entirely. Also say which one produced the 0.84125.]**
 
-Each run saves probabilities under `artifacts/`, so two models can be averaged:
+## Repository layout
 
-```python
-import numpy as np, data
-probs = np.mean([np.load(f"artifacts/{t}_test.npy")
-                 for t in ("deberta-v3-base", "roberta-large")], axis=0)
-data.write_submission(data.load("test")["id"], probs >= 0.45)
+```
+main.ipynb                  primary training and evaluation notebook
+Model_RoBERTa_1.ipynb       RoBERTa variant
+preprocessor/               text cleaning
+dataset/                    competition data
+preprocessed_df_train.csv   cleaned training set
+```
+
+## Stack
+
+Python · TensorFlow · KerasNLP · DistilBERT · RoBERTa · NLTK · pandas · NumPy
+
+## Running it
+
+```bash
+pip install -r requirements.txt   # [FILL: add a requirements.txt]
+jupyter lab
+```
+
+Competition data is available from the
+[Kaggle competition page](https://www.kaggle.com/competitions/nlp-getting-started/data).
+
+## Notes
+
+**[FILL: what was hardest, what didn't work, what you'd try next. Failed
+experiments belong here — they're evidence you iterate rather than getting
+lucky once.]**
+
+---
+
+### Housekeeping
+
+Before publishing this README, clean the repo:
+
+```bash
+git rm -r --cached .idea __pycache__
+printf '.idea/\n__pycache__/\n*.pyc\n' >> .gitignore
+git commit -m "Stop tracking IDE and cache files"
+git push
 ```
