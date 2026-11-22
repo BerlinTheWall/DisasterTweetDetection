@@ -65,7 +65,7 @@ in with `--model`) in PyTorch:
 
 Fine-tuning DeBERTa-v3 adds about 4 F1 points over a strong classical
 baseline on the same folds. For DeBERTa the tuned threshold barely differs
-from 0.5, so its probabilities are already well calibrated for F1.
+from 0.5, so the default threshold is already close to optimal.
 
 Best Kaggle leaderboard submission: **0.84125 F1**.
 
