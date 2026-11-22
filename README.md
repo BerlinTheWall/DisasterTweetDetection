@@ -56,10 +56,18 @@ in with `--model`) in PyTorch:
 
 ## Model comparison
 
-| Model | Score |
-|---|---|
-| TF-IDF + linear SVM baseline | 0.7783 F1 (5-fold out-of-fold, tuned threshold) |
-| Fine-tuned transformer, best leaderboard submission | **0.84125 F1** (Kaggle leaderboard) |
+5-fold out-of-fold F1 on the training set (7,613 rows):
+
+| Model | OOF F1 @ 0.50 | OOF F1, tuned threshold |
+|---|---|---|
+| TF-IDF + linear SVM (baseline) | 0.7703 | 0.7783 (at 0.45) |
+| DeBERTa-v3-base | **0.8164** | **0.8165** (at 0.49) |
+
+Fine-tuning DeBERTa-v3 adds about 4 F1 points over a strong classical
+baseline on the same folds. For DeBERTa the tuned threshold barely differs
+from 0.5, so its probabilities are already well calibrated for F1.
+
+Best Kaggle leaderboard submission: **0.84125 F1**.
 
 ## Repository layout
 
