@@ -1,89 +1,97 @@
 # Disaster Tweet Detection
 
 Classifying whether a tweet describes a real disaster or uses disaster language
-figuratively — "this traffic is a nightmare" versus an actual emergency. The
+figuratively: "this traffic is a nightmare" versus an actual emergency. The
 distinction matters for emergency-response systems that monitor social media,
-and it is hard precisely because the surface language is often identical.
+and it is hard because the surface language is often identical.
 
 Built for the Kaggle competition
 [Natural Language Processing with Disaster Tweets](https://www.kaggle.com/competitions/nlp-getting-started).
 
 ## Result
 
-**0.84125 F1 — rank 54 on the leaderboard** *(22 August 2026)*.
+**0.84125 F1, rank 54 on the leaderboard** *(22 August 2026)*, up from a
+previous best of 0.82776.
 
-Improved from a previous best of 0.82776.
-
-Worth noting for anyone reading the number: this competition's public leaderboard
-contains perfect scores obtained from leaked test labels. Around 0.84 is close to
-the practical ceiling for an honestly-trained model on this task.
+This competition's public leaderboard contains perfect scores obtained from
+leaked test labels. Around 0.84 is close to the practical ceiling for an
+honestly trained model on this task.
 
 ## Approach
 
-1. **Preprocessing** (`preprocessor/`) — **[FILL: what cleaning you do. URL and
-   mention stripping? Hashtag handling? Emoji? Lowercasing? Say which, and why —
-   the choices are where the thinking shows.]**
-2. **Baseline and iteration** (`main.ipynb`) — **[FILL: what you started with
-   and what you tried]**
-3. **Transformer fine-tuning** — DistilBERT via KerasNLP, with a RoBERTa variant
-   in `Model_RoBERTa_1.ipynb`
+### 1. Data cleaning (`data.py`)
+
+- **Light cleaning only.** HTML entities are unescaped, URLs are removed and
+  whitespace is collapsed. Case and punctuation are kept, because a pretrained
+  transformer uses them ("BREAKING:" carries signal).
+- **Keyword as context.** Each input is built as `keyword: tweet text`
+  (for example `forest fire: Big blaze near the highway`), so the model sees the
+  disaster keyword Kaggle provides alongside the tweet.
+- **Fixing contradictory labels.** The training set contains near-duplicate
+  tweets labelled both 0 and 1. Tweets are grouped by an aggressive normalized
+  form (lowercase, letters and digits only), and each group with a clear
+  majority is snapped to that label. This corrects 58 of 7,613 training rows.
+  Exact ties are left alone. The normalized form is used only for this step,
+  never as model input.
+
+### 2. Baseline (`train_baseline.py`)
+
+A fast CPU check before spending GPU time: word 1 to 2 gram and character
+3 to 5 gram TF-IDF features into a calibrated linear SVM, with 5-fold
+stratified cross-validation.
+
+### 3. Transformer fine-tuning (`train.py`)
+
+Fine-tunes `microsoft/deberta-v3-base` (any Hugging Face model can be swapped
+in with `--model`) in PyTorch:
+
+- 5-fold stratified cross-validation; test predictions are averaged across folds
+- AdamW with cosine learning-rate schedule and 10% warmup, gradient clipping,
+  mixed precision on GPU
+- **Threshold tuning:** instead of assuming 0.5, the decision threshold is chosen
+  by maximizing F1 on the out-of-fold predictions, which are never seen in
+  training
+- Out-of-fold and test probabilities are saved to `artifacts/` so runs from
+  different models can be compared or ensembled later
 
 ## Model comparison
 
-**[FILL: a small table. Which models you tried and what each scored. You have at
-least DistilBERT and RoBERTa — putting their numbers side by side turns this
-from "I trained a model" into "I ran an experiment", which is a different
-signal entirely.]**
+5-fold out-of-fold F1 on the training set:
 
-| Model | Validation score | Leaderboard score |
+| Model | OOF F1 @ 0.50 | OOF F1, tuned threshold |
 |---|---|---|
-| DistilBERT (KerasNLP) | **[FILL]** | **[FILL]** |
-| RoBERTa | **[FILL]** | **[FILL]** |
-| *Best submission* | | **0.84125** |
+| TF-IDF + linear SVM (baseline) | 0.7703 | 0.7783 (at 0.45) |
+| DeBERTa-v3-base | | |
 
-**[FILL: fill in the per-model numbers. Two models with their scores side by side
-turns this from "I trained a model" into "I ran an experiment" — a different
-signal entirely. Also say which one produced the 0.84125.]**
+Best leaderboard submission: **0.84125**.
 
 ## Repository layout
 
 ```
-main.ipynb                  primary training and evaluation notebook
-Model_RoBERTa_1.ipynb       RoBERTa variant
-preprocessor/               text cleaning
-dataset/                    competition data
-preprocessed_df_train.csv   cleaned training set
+data.py              loading, cleaning, label fixing, submission writer
+train_baseline.py    TF-IDF + linear SVM baseline (CPU, under a minute)
+train.py             transformer fine-tuning with k-fold CV
+tests/test_data.py   unit tests for the data pipeline
+dataset/             competition data (train, test, sample submission)
 ```
-
-## Stack
-
-Python · TensorFlow · KerasNLP · DistilBERT · RoBERTa · NLTK · pandas · NumPy
 
 ## Running it
 
-```bash
-pip install -r requirements.txt   # [FILL: add a requirements.txt]
-jupyter lab
-```
-
-Competition data is available from the
-[Kaggle competition page](https://www.kaggle.com/competitions/nlp-getting-started/data).
-
-## Notes
-
-**[FILL: what was hardest, what didn't work, what you'd try next. Failed
-experiments belong here — they're evidence you iterate rather than getting
-lucky once.]**
-
----
-
-### Housekeeping
-
-Before publishing this README, clean the repo:
+Install PyTorch first, matched to your CUDA version
+([instructions](https://pytorch.org/get-started/locally/)), then:
 
 ```bash
-git rm -r --cached .idea __pycache__
-printf '.idea/\n__pycache__/\n*.pyc\n' >> .gitignore
-git commit -m "Stop tracking IDE and cache files"
-git push
+pip install -r requirements.txt
+
+python -m pytest                                    # 11 tests
+python train_baseline.py                            # baseline, writes submission.csv
+python train.py                                     # full 5-fold DeBERTa-v3-base run
+python train.py --folds 1 --epochs 1 --limit 500    # quick smoke test
 ```
+
+A full 5-fold run needs a CUDA GPU; on CPU it takes hours.
+
+## Stack
+
+Python · PyTorch · Hugging Face Transformers · DeBERTa-v3 · scikit-learn ·
+pandas · NumPy · pytest
