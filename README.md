@@ -61,9 +61,6 @@ in with `--model`) in PyTorch:
 | TF-IDF + linear SVM baseline | 0.7783 F1 (5-fold out-of-fold, tuned threshold) |
 | Fine-tuned transformer, best leaderboard submission | **0.84125 F1** (Kaggle leaderboard) |
 
-Fine-tuning a pretrained transformer adds about 6 F1 points over a strong
-classical baseline.
-
 ## Repository layout
 
 ```
